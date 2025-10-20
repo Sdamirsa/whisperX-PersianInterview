@@ -18,13 +18,14 @@ dependencies = [
     "pandas>=2.2.3,<2.3.0",
     "av<16.0.0",
     "numpy>=2.1.0,<2.3.0; python_version >='3.13'",
-    "pyannote-audio>=3.3.2,<4.0.0",
+    "pyannote-audio>=3.4.0,<4.0.0",
     "torch~=2.8.0",
     "torchaudio~=2.8.0",
     "transformers>=4.48.0",
     "triton>=3.3.0; sys_platform == 'linux' and platform_machine == 'x86_64'", # only install triton on x86_64 Linux
     "python-dotenv>=1.0.0",
-    "rich>=13.0.0"
+    "rich>=13.0.0",
+    "huggingface_hub>=0.20.0"
 ]
 
 

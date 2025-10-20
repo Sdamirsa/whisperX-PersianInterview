@@ -2,6 +2,21 @@
 
 An automated transcription system for Persian (Farsi) interview recordings with speaker diarization using WhisperX and OpenAI's Whisper large-v3 model.
 
+## What's Enhanced in This WhisperX Implementation
+
+This project extends the original WhisperX with several key improvements:
+
+- 🎯 **Persian-Optimized Pipeline**: Pre-configured for Farsi language with large-v3 model
+- 🐛 **Advanced Debug Mode**: Comprehensive logging, UTF-8 validation, and error tracking
+- 📊 **Rich Metadata**: Complete processing information saved in all output files
+- 🔄 **Resume Functionality**: Smart batch processing with automatic progress tracking  
+- ⚡ **Performance Optimization**: ONNXRuntime-GPU setup for 3-5x faster diarization
+- 🎨 **Rich Terminal UI**: Colored progress bars, status tables, and error visualization
+- 🔐 **Smart Authentication**: HuggingFace token validation and model access testing
+- 📁 **Organized Output**: Timestamped folders with stage-specific files (`_S1`, `_S2`, `_S3`)
+- 🛡️ **Error Recovery**: Continues processing if individual stages fail
+- 🔍 **Character Validation**: Detects and reports encoding artifacts in transcriptions
+
 ## Features
 
 - **Persian Language Support**: Optimized for Farsi transcription with embedded English word handling
@@ -61,7 +76,15 @@ An automated transcription system for Persian (Farsi) interview recordings with 
    - Replace `your_hf_token_here` with your actual token
    - Save the file
 
-### Step 6: Test with Sample Audio
+### Step 6: Optimize Performance (Optional but Highly Recommended)
+**Run this once for significantly faster diarization:**
+```bash
+uv run python optimize_onnx_for_diarization.py
+```
+⚡ This can improve diarization speed by 3-5x by optimizing ONNXRuntime for GPU acceleration.
+💡 **Note**: After running this optimization, diarization performance will be significantly improved.
+
+### Step 7: Test with Sample Audio
 ```bash
 uv run python Run_whisperx_PersianInterview.py data/test-voice/
 ```
@@ -116,7 +139,15 @@ uv run python Run_whisperx_PersianInterview.py data/test-voice/
    - Replace `your_hf_token_here` with your actual token
    - Save the file
 
-### Step 6: Test with Sample Audio
+### Step 6: Optimize Performance (Optional but Highly Recommended)
+**Run this once for significantly faster diarization:**
+```cmd
+uv run python optimize_onnx_for_diarization.py
+```
+⚡ This can improve diarization speed by 3-5x by optimizing ONNXRuntime for GPU acceleration.
+💡 **Note**: After running this optimization, diarization performance will be significantly improved.
+
+### Step 7: Test with Sample Audio
 ```cmd
 uv run python Run_whisperx_PersianInterview.py data\test-voice\
 ```
@@ -186,6 +217,7 @@ whisperX-PersianInterview/
 ├── .claude                          # Strategic guide for development
 ├── .env                             # HuggingFace token (auto-created)
 ├── Run_whisperx_PersianInterview.py # Main transcription script
+├── optimize_onnx_for_diarization.py # Performance optimization script
 ├── pyproject.toml                   # UV project configuration
 ├── data/
 │   ├── test-voice/                  # Sample audio files
@@ -225,11 +257,14 @@ whisperX-PersianInterview/
 
 3. **Out of Memory**: Reduce batch size using `--batch_size 2`
 
-4. **Slow Processing**: Default settings are optimized for Apple Silicon
+4. **Slow Diarization**: Run the optimization script first:
+   ```bash
+   uv run python optimize_onnx_for_diarization.py
+   ```
 
-5. **Missing Speakers**: Adjust `--min_speakers` and `--max_speakers` parameters
+6. **Missing Speakers**: Adjust `--min_speakers` and `--max_speakers` parameters
 
-6. **Python/uv not found**: 
+7. **Python/uv not found**: 
    - **macOS**: Install Homebrew first, then `brew install uv`
    - **Windows**: Install Python with "Add to PATH" checked, then `pip install uv`
 

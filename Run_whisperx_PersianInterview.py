@@ -9,6 +9,8 @@ import sys
 import json
 import argparse
 import gc
+import logging
+import traceback
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -24,8 +26,178 @@ from whisperx.diarize import DiarizationPipeline
 # Initialize Rich console
 console = Console()
 
+# Global debug flag
+DEBUG_MODE = False
+DEBUG_LOG_FILE = None
+
 # Load environment variables
 load_dotenv()
+
+def setup_debug_logging(output_dir, debug_mode=False):
+    """Set up comprehensive logging for debug mode."""
+    global DEBUG_MODE, DEBUG_LOG_FILE
+    DEBUG_MODE = debug_mode
+    
+    if not debug_mode:
+        return None
+    
+    # Create log file in output directory
+    log_file = Path(output_dir) / f"debug_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    DEBUG_LOG_FILE = log_file
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file, encoding='utf-8'),
+            logging.StreamHandler(sys.stdout) if debug_mode else logging.NullHandler()
+        ]
+    )
+    
+    logger = logging.getLogger(__name__)
+    logger.info("Debug mode enabled - comprehensive logging started")
+    logger.info(f"Log file: {log_file}")
+    
+    return logger
+
+def debug_print(message, data=None):
+    """Print debug information both to console and log file."""
+    if not DEBUG_MODE:
+        return
+    
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    
+    # Print to console with rich formatting
+    console.print(f"[dim yellow]🐛 {timestamp}:[/dim yellow] {message}")
+    
+    # Log to file
+    logger = logging.getLogger(__name__)
+    logger.debug(f"{message}")
+    
+    if data is not None:
+        # Print data with UTF-8 validation
+        try:
+            if isinstance(data, (dict, list)):
+                json_str = json.dumps(data, ensure_ascii=False, indent=2)
+                console.print(f"[dim cyan]Data:[/dim cyan] {json_str[:500]}{'...' if len(json_str) > 500 else ''}")
+                logger.debug(f"Data: {json_str}")
+            else:
+                data_str = str(data)
+                console.print(f"[dim cyan]Data:[/dim cyan] {data_str[:500]}{'...' if len(data_str) > 500 else ''}")
+                logger.debug(f"Data: {data_str}")
+        except Exception as e:
+            console.print(f"[red]Error printing debug data: {e}[/red]")
+            logger.error(f"Error printing debug data: {e}")
+
+def validate_utf8_text(text, source="unknown"):
+    """Validate and analyze UTF-8 text for encoding issues."""
+    if not DEBUG_MODE:
+        return text
+    
+    debug_print(f"UTF-8 validation for {source}")
+    
+    if not isinstance(text, str):
+        debug_print(f"Text is not string type: {type(text)}")
+        return text
+    
+    # Check for common encoding issues
+    issues = []
+    
+    # Check for replacement characters
+    if '�' in text:
+        issues.append("Contains replacement characters (�)")
+    
+    # Check for common encoding artifacts
+    artifacts = ['&&&&', '####', '????', '\ufffd']
+    for artifact in artifacts:
+        if artifact in text:
+            issues.append(f"Contains artifact: {artifact}")
+    
+    # Check for mixed encodings
+    try:
+        text.encode('utf-8')
+    except UnicodeEncodeError as e:
+        issues.append(f"UTF-8 encoding error: {e}")
+    
+    # Sample text for debugging
+    sample = text[:100] if len(text) > 100 else text
+    debug_print(f"Text sample from {source}", {"sample": sample, "length": len(text), "issues": issues})
+    
+    return text
+
+def safe_json_save(data, filepath, source="unknown"):
+    """Safely save JSON with UTF-8 encoding and debug validation."""
+    try:
+        # Validate text content if in debug mode
+        if DEBUG_MODE:
+            debug_print(f"Saving JSON to {filepath} from {source}")
+            
+            # Recursively validate text in data structure
+            def validate_recursive(obj, path="root"):
+                if isinstance(obj, dict):
+                    for key, value in obj.items():
+                        validate_recursive(value, f"{path}.{key}")
+                elif isinstance(obj, list):
+                    for i, item in enumerate(obj):
+                        validate_recursive(item, f"{path}[{i}]")
+                elif isinstance(obj, str):
+                    validate_utf8_text(obj, f"{source}.{path}")
+            
+            validate_recursive(data)
+        
+        # Save with explicit UTF-8 encoding
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        debug_print(f"Successfully saved JSON: {filepath}")
+        
+    except Exception as e:
+        error_msg = f"Error saving JSON to {filepath}: {e}"
+        console.print(f"[red]✗ {error_msg}[/red]")
+        if DEBUG_MODE:
+            debug_print(error_msg)
+            debug_print("Exception traceback", traceback.format_exc())
+        raise
+
+def test_hf_authentication():
+    """Test HuggingFace authentication and model access."""
+    debug_print("Testing HuggingFace authentication")
+    
+    hf_token = os.getenv('HF_TOKEN') or os.getenv('hf_token')
+    
+    if not hf_token:
+        debug_print("No HF token found")
+        return False, "No HF token configured"
+    
+    debug_print(f"HF token found: {hf_token[:10]}...")
+    
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        
+        # Test access to required models
+        models_to_test = [
+            "pyannote/segmentation-3.0",
+            "pyannote/speaker-diarization-3.1"
+        ]
+        
+        results = {}
+        for model in models_to_test:
+            try:
+                info = api.model_info(model, token=hf_token)
+                results[model] = {"status": "accessible", "info": info.id}
+                debug_print(f"✓ Model {model} is accessible")
+            except Exception as e:
+                results[model] = {"status": "error", "error": str(e)}
+                debug_print(f"✗ Model {model} failed: {e}")
+        
+        return True, results
+        
+    except Exception as e:
+        error_msg = f"HF authentication test failed: {e}"
+        debug_print(error_msg)
+        return False, error_msg
 
 def check_hf_token():
     """Check if HF_TOKEN exists in environment, create .env template if not."""
@@ -229,13 +401,31 @@ def transcribe_audio(audio_path, args, output_dir):
     Returns:
         dict: Results from each stage or None if critical error
     """
+    # Set up debug logging
+    logger = setup_debug_logging(output_dir, args.debug_mode)
+    
     device = args.device
     compute_type = args.compute_type
     batch_size = args.batch_size
     hf_token = os.getenv('HF_TOKEN') or os.getenv('hf_token')
     
+    debug_print("Starting transcription process", {
+        "audio_path": str(audio_path),
+        "device": device,
+        "compute_type": compute_type,
+        "batch_size": batch_size,
+        "debug_mode": args.debug_mode
+    })
+    
+    # Test HF authentication in debug mode
+    if DEBUG_MODE and args.diarize:
+        auth_success, auth_results = test_hf_authentication()
+        debug_print("HF authentication test", auth_results)
+    
     if not hf_token and args.diarize:
-        print("Warning: HF_TOKEN not found in .env file. Diarization will be skipped.")
+        warning_msg = "Warning: HF_TOKEN not found in .env file. Diarization will be skipped."
+        console.print(f"[yellow]{warning_msg}[/yellow]")
+        debug_print(warning_msg)
         
     audio_name = Path(audio_path).stem
     output_base = Path(output_dir) / audio_name
@@ -253,10 +443,14 @@ def transcribe_audio(audio_path, args, output_dir):
         'processing': {
             'started_at': datetime.now().isoformat(),
             'stages_completed': [],
-            'errors': []
+            'errors': [],
+            'debug_mode': args.debug_mode,
+            'debug_log_file': str(DEBUG_LOG_FILE) if DEBUG_LOG_FILE else None
         },
         'stages': {}
     }
+    
+    debug_print("Initial results structure", results)
     
     console.print(f"\n[bold cyan]📂 Processing:[/bold cyan] {Path(audio_path).name}")
     console.rule(style="cyan")
@@ -294,6 +488,18 @@ def transcribe_audio(audio_path, args, output_dir):
                 language="fa"  # Persian
             )
         
+        # Debug raw transcription output
+        debug_print("Raw transcription result", {
+            "language": result.get('language', 'unknown'),
+            "segments_count": len(result.get('segments', [])),
+            "text_length": len(result.get('text', '')),
+            "first_segment": result.get('segments', [{}])[0] if result.get('segments') else None
+        })
+        
+        # Validate transcription text
+        transcription_text = result.get('text', '')
+        validate_utf8_text(transcription_text, "whisper_transcription")
+        
         # Save Stage 1 results with metadata
         stage1_data = {
             'metadata': runtime_config,
@@ -302,16 +508,17 @@ def transcribe_audio(audio_path, args, output_dir):
             'model_used': 'large-v3',
             'language_detected': result.get('language', 'fa'),
             'segments': result.get('segments', []),
-            'text': result.get('text', '')
+            'text': transcription_text
         }
         
         stage1_file = f"{output_base}_S1transcription.json"
-        with open(stage1_file, 'w', encoding='utf-8') as f:
-            json.dump(stage1_data, f, ensure_ascii=False, indent=2)
+        safe_json_save(stage1_data, stage1_file, "stage1_transcription")
         
         console.print(f"[green]✓[/green] Saved transcription: [cyan]{Path(stage1_file).name}[/cyan]")
         results['stages']['transcription'] = result
         results['processing']['stages_completed'].append('transcription')
+        
+        debug_print("Stage 1 completed successfully")
         
         # Clean up model if needed
         if args.model_flush:
@@ -322,7 +529,12 @@ def transcribe_audio(audio_path, args, output_dir):
             del model
             
     except Exception as e:
-        console.print(f"[red]✗ Transcription failed: {e}[/red]")
+        error_msg = f"Transcription failed: {e}"
+        console.print(f"[red]✗ {error_msg}[/red]")
+        debug_print("Transcription exception", {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        })
         results['stages']['transcription'] = {'error': str(e)}
         results['processing']['errors'].append({'stage': 'transcription', 'error': str(e)})
         return results
@@ -330,6 +542,12 @@ def transcribe_audio(audio_path, args, output_dir):
     try:
         # Stage 2: Speaker Diarization
         if args.diarize and hf_token:
+            debug_print("Starting diarization stage", {
+                "min_speakers": args.min_speakers,
+                "max_speakers": args.max_speakers,
+                "hf_token_length": len(hf_token) if hf_token else 0
+            })
+            
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -337,20 +555,31 @@ def transcribe_audio(audio_path, args, output_dir):
             ) as progress:
                 task = progress.add_task("[magenta]👥 Stage 2: Speaker Diarization[/magenta]", total=None)
                 
-                diarize_model = DiarizationPipeline(
-                    use_auth_token=hf_token,
-                    device=device
-                )
-                
-                # Run diarization
-                diarize_segments = diarize_model(
-                    audio,
-                    min_speakers=args.min_speakers,
-                    max_speakers=args.max_speakers
-                )
-                
-                # Assign speakers to words
-                result = whisperx.assign_word_speakers(diarize_segments, result)
+                try:
+                    debug_print("Initializing DiarizationPipeline")
+                    diarize_model = DiarizationPipeline(
+                        use_auth_token=hf_token,
+                        device=device
+                    )
+                    
+                    debug_print("Running diarization on audio")
+                    # Run diarization
+                    diarize_segments = diarize_model(
+                        audio,
+                        min_speakers=args.min_speakers,
+                        max_speakers=args.max_speakers
+                    )
+                    
+                    debug_print("Diarization completed, assigning speakers to words")
+                    # Assign speakers to words
+                    result = whisperx.assign_word_speakers(diarize_segments, result)
+                    
+                except Exception as diarize_error:
+                    debug_print("Diarization initialization/processing failed", {
+                        "error": str(diarize_error),
+                        "traceback": traceback.format_exc()
+                    })
+                    raise diarize_error
             
             # Save Stage 2 results with metadata
             speakers_found = list(set(
@@ -358,6 +587,17 @@ def transcribe_audio(audio_path, args, output_dir):
                 for seg in result.get('segments', [])
                 if seg.get('speaker')
             ))
+            
+            debug_print("Diarization results", {
+                "speakers_found": speakers_found,
+                "total_segments": len(result.get('segments', [])),
+                "segments_with_speakers": len([s for s in result.get('segments', []) if s.get('speaker')])
+            })
+            
+            # Validate speaker text
+            for segment in result.get('segments', []):
+                if 'text' in segment:
+                    validate_utf8_text(segment['text'], f"diarization_segment_{segment.get('speaker', 'unknown')}")
             
             stage2_data = {
                 'metadata': runtime_config,
@@ -372,13 +612,14 @@ def transcribe_audio(audio_path, args, output_dir):
             }
             
             stage2_file = f"{output_base}_S2diarization.json"
-            with open(stage2_file, 'w', encoding='utf-8') as f:
-                json.dump(stage2_data, f, ensure_ascii=False, indent=2)
+            safe_json_save(stage2_data, stage2_file, "stage2_diarization")
             
             num_speakers = len(speakers_found)
             console.print(f"[green]✓[/green] Saved diarization: [cyan]{Path(stage2_file).name}[/cyan] ([bold]{num_speakers} speakers[/bold])")
             results['stages']['diarization'] = stage2_data
             results['processing']['stages_completed'].append('diarization')
+            
+            debug_print("Stage 2 completed successfully")
             
             # Clean up
             if args.model_flush:
@@ -393,7 +634,12 @@ def transcribe_audio(audio_path, args, output_dir):
             results['stages']['diarization'] = {'skipped': True}
             
     except Exception as e:
-        console.print(f"[red]✗ Diarization failed: {e}[/red]")
+        error_msg = f"Diarization failed: {e}"
+        console.print(f"[red]✗ {error_msg}[/red]")
+        debug_print("Diarization exception", {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        })
         results['stages']['diarization'] = {'error': str(e)}
         results['processing']['errors'].append({'stage': 'diarization', 'error': str(e)})
     
@@ -422,6 +668,18 @@ def transcribe_audio(audio_path, args, output_dir):
                     device
                 )
             
+            # Debug alignment results
+            debug_print("Alignment results", {
+                "segments_count": len(result.get('segments', [])),
+                "word_segments_count": len(result.get('word_segments', [])),
+                "has_word_timestamps": bool(result.get('word_segments'))
+            })
+            
+            # Validate alignment text
+            for segment in result.get('segments', []):
+                if 'text' in segment:
+                    validate_utf8_text(segment['text'], f"alignment_segment")
+            
             # Save Stage 3 results with metadata
             stage3_data = {
                 'metadata': runtime_config,
@@ -434,11 +692,12 @@ def transcribe_audio(audio_path, args, output_dir):
             }
             
             stage3_file = f"{output_base}_S3wav2vec.json"
-            with open(stage3_file, 'w', encoding='utf-8') as f:
-                json.dump(stage3_data, f, ensure_ascii=False, indent=2)
+            safe_json_save(stage3_data, stage3_file, "stage3_alignment")
             console.print(f"[green]✓[/green] Saved alignment: [cyan]{Path(stage3_file).name}[/cyan]")
             results['stages']['wav2vec'] = result
             results['processing']['stages_completed'].append('alignment')
+            
+            debug_print("Stage 3 completed successfully")
             
             # Clean up
             if args.model_flush:
@@ -492,9 +751,10 @@ def transcribe_audio(audio_path, args, output_dir):
         
         # Also save complete JSON with all metadata
         complete_file = f"{output_base}_complete.json"
-        with open(complete_file, 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
+        safe_json_save(results, complete_file, "complete_results")
         console.print(f"[green]✓[/green] Saved complete: [cyan]{Path(complete_file).name}[/cyan]")
+        
+        debug_print("Complete results saved successfully")
         
     except Exception as e:
         console.print(f"[red]✗ Final output generation failed: {e}[/red]")
@@ -759,6 +1019,12 @@ def main():
         help='Flush models between stages to save memory (default: True)'
     )
     
+    parser.add_argument(
+        '--debug_mode',
+        action='store_true',
+        help='Enable debug mode with extensive logging and character encoding checks'
+    )
+    
     args = parser.parse_args()
     
     # Display welcome message
@@ -771,19 +1037,53 @@ def main():
     # Check if input is file or directory
     input_path = Path(args.input_path)
     
+    # Check and optimize onnxruntime for performance if needed
+    if args.debug_mode:
+        console.print("[dim yellow]🔧 Checking onnxruntime optimization...[/dim yellow]")
+        check_onnxruntime_optimization()
+    
     if input_path.is_file():
         # For single file, create output directory based on parent folder
         parent_folder = input_path.parent.name
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = Path("data/outputs") / f"{parent_folder}_{timestamp}"
         output_dir.mkdir(parents=True, exist_ok=True)
-        print(f"\n✓ Created output folder: {output_dir}")
+        console.print(f"\n[green]✓[/green] Created output folder: [cyan]{output_dir}[/cyan]")
         transcribe_audio(str(input_path), args, output_dir)
     elif input_path.is_dir():
         process_folder(str(input_path), args)
     else:
-        print(f"Error: {input_path} is neither a file nor a directory")
+        console.print(f"[red]Error: {input_path} is neither a file nor a directory[/red]")
         sys.exit(1)
+
+def check_onnxruntime_optimization():
+    """Check if onnxruntime-gpu is available for better performance."""
+    try:
+        import onnxruntime as ort
+        providers = ort.get_available_providers()
+        
+        debug_print("ONNXRuntime providers", {
+            "available_providers": providers,
+            "has_gpu": 'CUDAExecutionProvider' in providers,
+            "has_cpu_only": 'CPUExecutionProvider' in providers and len(providers) == 1
+        })
+        
+        if 'CUDAExecutionProvider' not in providers and 'CPUExecutionProvider' in providers:
+            console.print(Panel.fit(
+                "[yellow]⚠️  Performance Notice[/yellow]\n\n"
+                "ONNXRuntime is using CPU only. For faster diarization:\n"
+                "1. On systems with CUDA: `uv add onnxruntime-gpu`\n"
+                "2. Then: `uv remove onnxruntime`\n\n"
+                "Current providers: " + ", ".join(providers),
+                border_style="yellow"
+            ))
+        else:
+            console.print("[green]✓[/green] ONNXRuntime optimization looks good")
+            
+    except ImportError:
+        debug_print("ONNXRuntime not available")
+    except Exception as e:
+        debug_print(f"Error checking ONNXRuntime: {e}")
 
 
 if __name__ == '__main__':
