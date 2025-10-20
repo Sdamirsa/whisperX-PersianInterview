@@ -24,6 +24,47 @@ This project extends the original WhisperX with several key improvements:
 - **High Accuracy**: Uses Whisper large-v3 model for improved transcription quality
 - **Robust Processing**: Saves intermediate outputs with graceful error handling
 - **macOS Optimized**: Configured for Apple Silicon (M3 Max) performance
+- **Audio Preprocessing**: Integrated voice cleaner for optimal transcription quality
+
+## Voice Cleaner Module
+
+The integrated voice cleaner preprocesses audio files to improve transcription accuracy:
+
+### Features
+- **Noise Reduction**: Removes background noise and static
+- **Audio Normalization**: Consistent volume levels across recordings
+- **De-essing**: Reduces harsh sibilant sounds (S, Z sounds)
+- **Frequency Filtering**: Removes low-frequency rumble and electrical hum
+- **Format Optimization**: Converts to 16kHz mono WAV for optimal Whisper performance
+
+### Usage
+Audio cleaning is **enabled by default**. Cleaned files are saved in a `_clean` folder alongside your original files.
+
+```bash
+# Default behavior - audio cleaning enabled
+uv run python Run_whisperx_PersianInterview.py data/test-voice/
+
+# Disable audio cleaning if needed
+uv run python Run_whisperx_PersianInterview.py data/test-voice/ --no-clean-audio
+
+# Use standalone voice cleaner
+cd my_code/voice_cleaner
+uv run voice_cleaner.py path/to/audio/files
+```
+
+### Setup
+The voice cleaner uses its own isolated environment:
+
+```bash
+# Install voice cleaner dependencies
+cd my_code/voice_cleaner
+uv sync
+
+# Test the voice cleaner
+uv run voice_cleaner.py --help
+```
+
+**Supported formats**: MP3, M4A, WAV, FLAC, OGG, AAC, and more
 
 ## Quick Start Guide for Non-Technical Users
 
@@ -219,6 +260,11 @@ whisperX-PersianInterview/
 ├── Run_whisperx_PersianInterview.py # Main transcription script
 ├── optimize_onnx_for_diarization.py # Performance optimization script
 ├── pyproject.toml                   # UV project configuration
+├── my_code/
+│   └── voice_cleaner/               # Voice cleaning module
+│       ├── voice_cleaner.py         # Audio preprocessing script
+│       ├── README.md                # Voice cleaner documentation
+│       └── pyproject.toml           # Isolated UV environment
 ├── data/
 │   ├── test-voice/                  # Sample audio files
 │   └── outputs/                     # Generated transcriptions
@@ -234,11 +280,12 @@ whisperX-PersianInterview/
 - **Compute Type**: int8 (optimized for Apple Silicon)
 
 ### Processing Pipeline
-1. Audio preprocessing with VAD (Voice Activity Detection)
-2. Transcription using Whisper large-v3
-3. Speaker diarization with pyannote
-4. Word-level alignment with wav2vec2
-5. Output generation with error handling
+1. **Audio Cleaning** (optional, enabled by default): Noise reduction, normalization, de-essing
+2. **Audio Preprocessing**: VAD (Voice Activity Detection) and format optimization
+3. **Transcription**: Using Whisper large-v3 with Persian language optimization
+4. **Speaker Diarization**: Multi-speaker identification with pyannote
+5. **Word-level Alignment**: Precise timing using wav2vec2
+6. **Output Generation**: Multiple formats with comprehensive error handling
 
 ## Troubleshooting
 

@@ -19,9 +19,18 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRe
 from rich.panel import Panel
 from rich.table import Table
 from rich import print as rprint
+import torch
 
 import whisperx
 from whisperx.diarize import DiarizationPipeline
+
+# Import voice cleaner
+try:
+    from my_code.voice_cleaner import clean_audio_batch
+    VOICE_CLEANER_AVAILABLE = True
+except ImportError:
+    VOICE_CLEANER_AVAILABLE = False
+    console.print("[yellow]⚠️  Voice cleaner module not available. Install with: cd my_code/voice_cleaner && uv sync[/yellow]")
 
 # Initialize Rich console
 console = Console()
@@ -331,7 +340,7 @@ def get_whisperx_defaults():
     
     return defaults
 
-def get_runtime_config(args, model_name="large-v3"):
+def get_runtime_config(args):
     """Get the actual runtime configuration being used."""
     import platform
     import torch
@@ -363,11 +372,11 @@ def get_runtime_config(args, model_name="large-v3"):
             "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         },
         "model_config": {
-            "model_name": model_name,
+            "model_name": args.model,
             "device": args.device,
             "compute_type": args.compute_type,
             "batch_size": args.batch_size,
-            "language": "fa",
+            "language": args.language,
         },
         "processing_config": {
             "diarize": args.diarize,
@@ -407,7 +416,7 @@ def transcribe_audio(audio_path, args, output_dir):
     device = args.device
     compute_type = args.compute_type
     batch_size = args.batch_size
-    hf_token = os.getenv('HF_TOKEN') or os.getenv('hf_token')
+    hf_token = args.hf_token or os.getenv('HF_TOKEN') or os.getenv('hf_token')
     
     debug_print("Starting transcription process", {
         "audio_path": str(audio_path),
@@ -431,7 +440,7 @@ def transcribe_audio(audio_path, args, output_dir):
     output_base = Path(output_dir) / audio_name
     
     # Get comprehensive metadata
-    runtime_config = get_runtime_config(args, model_name="large-v3")
+    runtime_config = get_runtime_config(args)
     
     results = {
         'metadata': runtime_config,
@@ -468,24 +477,45 @@ def transcribe_audio(audio_path, args, output_dir):
             task = progress.add_task("[yellow]🎯 Stage 1: Transcription[/yellow]", total=3)
             
             # Load model
-            progress.update(task, description="[yellow]Loading Whisper large-v3...[/yellow]", advance=1)
+            progress.update(task, description=f"[yellow]Loading Whisper {args.model}...[/yellow]", advance=1)
             model = whisperx.load_model(
-                "large-v3", 
+                args.model, 
                 device, 
                 compute_type=compute_type,
-                language="fa"  # Set Persian as default
+                language=args.language,
+                device_index=args.device_index
             )
             
             # Load audio
             progress.update(task, description="[yellow]Loading audio file...[/yellow]", advance=1)
-            audio = whisperx.load_audio(audio_path)
+            audio = whisperx.load_audio(
+                audio_path,
+                vad_method=args.vad_method,
+                vad_onset=args.vad_onset,
+                vad_offset=args.vad_offset,
+                chunk_size=args.chunk_size
+            )
             
             # Transcribe
-            progress.update(task, description="[yellow]Transcribing Persian audio...[/yellow]", advance=1)
+            progress.update(task, description=f"[yellow]Transcribing {args.language} audio...[/yellow]", advance=1)
             result = model.transcribe(
                 audio, 
                 batch_size=batch_size,
-                language="fa"  # Persian
+                language=args.language,
+                temperature=args.temperature,
+                best_of=args.best_of,
+                beam_size=args.beam_size,
+                patience=args.patience,
+                length_penalty=args.length_penalty,
+                suppress_tokens=args.suppress_tokens,
+                initial_prompt=args.initial_prompt,
+                hotwords=args.hotwords,
+                condition_on_previous_text=args.condition_on_previous_text,
+                fp16=args.fp16,
+                temperature_increment_on_fallback=args.temperature_increment_on_fallback,
+                compression_ratio_threshold=args.compression_ratio_threshold,
+                logprob_threshold=args.logprob_threshold,
+                no_speech_threshold=args.no_speech_threshold
             )
         
         # Debug raw transcription output
@@ -505,7 +535,7 @@ def transcribe_audio(audio_path, args, output_dir):
             'metadata': runtime_config,
             'stage': 'transcription',
             'completed_at': datetime.now().isoformat(),
-            'model_used': 'large-v3',
+            'model_used': args.model,
             'language_detected': result.get('language', 'fa'),
             'segments': result.get('segments', []),
             'text': transcription_text
@@ -558,6 +588,7 @@ def transcribe_audio(audio_path, args, output_dir):
                 try:
                     debug_print("Initializing DiarizationPipeline")
                     diarize_model = DiarizationPipeline(
+                        model_name=args.diarize_model,
                         use_auth_token=hf_token,
                         device=device
                     )
@@ -655,8 +686,9 @@ def transcribe_audio(audio_path, args, output_dir):
                 
                 # Load alignment model
                 model_a, metadata = whisperx.load_align_model(
-                    language_code="fa",
-                    device=device
+                    language_code=args.language,
+                    device=device,
+                    model_name=args.align_model
                 )
                 
                 # Perform alignment
@@ -665,7 +697,9 @@ def transcribe_audio(audio_path, args, output_dir):
                     model_a, 
                     metadata, 
                     audio, 
-                    device
+                    device,
+                    interpolate_method=args.interpolate_method,
+                    return_char_alignments=args.return_char_alignments
                 )
             
             # Debug alignment results
@@ -848,8 +882,44 @@ def get_output_directory(input_folder, resume=False):
     return output_dir
 
 
+def clean_audio_if_needed(input_path, args):
+    """Clean audio files if requested and return the path to process."""
+    # Handle --no-clean-audio flag
+    clean_audio = getattr(args, 'clean_audio', True) and not getattr(args, 'no_clean_audio', False)
+    
+    if not clean_audio or not VOICE_CLEANER_AVAILABLE:
+        if not VOICE_CLEANER_AVAILABLE and clean_audio:
+            console.print("[yellow]⚠️  Voice cleaner not available, proceeding with original files[/yellow]")
+        return input_path, []
+    
+    console.print("\n[bold green]🧹 Cleaning audio files...[/bold green]")
+    
+    try:
+        # Clean the audio files
+        cleaned_files = clean_audio_batch(
+            input_path,
+            verbose=True
+        )
+        
+        if cleaned_files:
+            # Return the directory containing cleaned files
+            clean_dir = cleaned_files[0].parent
+            console.print(f"[green]✓[/green] Audio cleaning completed. Using cleaned files from: [cyan]{clean_dir}[/cyan]")
+            return clean_dir, cleaned_files
+        else:
+            console.print("[yellow]⚠️  No files were cleaned, proceeding with original files[/yellow]")
+            return input_path, []
+            
+    except Exception as e:
+        console.print(f"[red]✗ Audio cleaning failed: {e}[/red]")
+        console.print("[yellow]Proceeding with original files...[/yellow]")
+        return input_path, []
+
 def process_folder(input_folder, args):
     """Process all audio files in a folder with resume capability."""
+    
+    # Clean audio files if requested
+    process_folder_path, cleaned_files = clean_audio_if_needed(input_folder, args)
     
     # Get or create output directory
     output_dir = get_output_directory(input_folder, resume=args.resume)
@@ -863,7 +933,7 @@ def process_folder(input_folder, args):
     # Find all audio files
     audio_files = []
     for ext in audio_extensions:
-        audio_files.extend(Path(input_folder).glob(f"*{ext}"))
+        audio_files.extend(Path(process_folder_path).glob(f"*{ext}"))
     
     if not audio_files:
         console.print(f"[red]No audio files found in {input_folder}[/red]")
@@ -950,79 +1020,280 @@ def process_folder(input_folder, args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Transcribe Persian interviews with speaker diarization'
+        description='Transcribe Persian interviews with speaker diarization',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
+    # Input path (our custom parameter)
     parser.add_argument(
         'input_path',
         help='Path to audio file or folder containing audio files'
     )
     
+    # Resume functionality (our addition)
     parser.add_argument(
         '--resume',
         action='store_true',
         help='Resume processing from existing output folder'
     )
     
+    # Core WhisperX parameters with correct defaults
     parser.add_argument(
-        '--device',
-        default='cpu',
-        choices=['cpu', 'cuda'],
-        help='Device to use (default: cpu for macOS compatibility)'
+        '--model',
+        default='large-v3',
+        help='Whisper model to use (default: large-v3 for Persian)'
     )
     
     parser.add_argument(
-        '--compute_type',
-        default='int8',
-        choices=['int8', 'float16', 'float32'],
-        help='Compute type (default: int8 for efficiency)'
+        '--device',
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help='Device to use for PyTorch inference'
+    )
+    
+    parser.add_argument(
+        '--device_index',
+        default=0,
+        type=int,
+        help='Device index to use for FasterWhisper inference'
     )
     
     parser.add_argument(
         '--batch_size',
         type=int,
-        default=4,
-        help='Batch size for processing (default: 4, reduce if OOM)'
+        default=8,
+        help='The preferred batch size for inference'
     )
     
+    parser.add_argument(
+        '--compute_type',
+        default='float16',
+        choices=['float16', 'float32', 'int8'],
+        help='Compute type for computation'
+    )
+    
+    parser.add_argument(
+        '--language',
+        default='fa',
+        help='Language spoken in the audio (default: fa for Persian)'
+    )
+    
+    # Transcription quality parameters
+    parser.add_argument(
+        '--temperature',
+        type=float,
+        default=0,
+        help='Temperature to use for sampling'
+    )
+    
+    parser.add_argument(
+        '--best_of',
+        type=int,
+        default=5,
+        help='Number of candidates when sampling with non-zero temperature'
+    )
+    
+    parser.add_argument(
+        '--beam_size',
+        type=int,
+        default=5,
+        help='Number of beams in beam search, only applicable when temperature is zero'
+    )
+    
+    parser.add_argument(
+        '--patience',
+        type=float,
+        default=1.0,
+        help='Optional patience value to use in beam decoding'
+    )
+    
+    parser.add_argument(
+        '--length_penalty',
+        type=float,
+        default=1.0,
+        help='Optional token length penalty coefficient (alpha)'
+    )
+    
+    parser.add_argument(
+        '--suppress_tokens',
+        type=str,
+        default='-1',
+        help='Comma-separated list of token ids to suppress during sampling'
+    )
+    
+    parser.add_argument(
+        '--initial_prompt',
+        type=str,
+        default=None,
+        help='Optional text to provide as a prompt for the first window'
+    )
+    
+    parser.add_argument(
+        '--hotwords',
+        type=str,
+        default=None,
+        help='Hotwords/hint phrases to improve recognition of rare/technical terms'
+    )
+    
+    parser.add_argument(
+        '--condition_on_previous_text',
+        action='store_true',
+        default=False,
+        help='Provide the previous output as a prompt for the next window'
+    )
+    
+    parser.add_argument(
+        '--fp16',
+        action='store_true',
+        default=True,
+        help='Whether to perform inference in fp16'
+    )
+    
+    parser.add_argument(
+        '--temperature_increment_on_fallback',
+        type=float,
+        default=0.2,
+        help='Temperature to increase when decoding fails'
+    )
+    
+    parser.add_argument(
+        '--compression_ratio_threshold',
+        type=float,
+        default=2.4,
+        help='If gzip compression ratio is higher than this, treat decoding as failed'
+    )
+    
+    parser.add_argument(
+        '--logprob_threshold',
+        type=float,
+        default=-1.0,
+        help='If average log probability is lower than this, treat decoding as failed'
+    )
+    
+    parser.add_argument(
+        '--no_speech_threshold',
+        type=float,
+        default=0.6,
+        help='If probability of <|nospeech|> token is higher than this, consider segment as silence'
+    )
+    
+    # VAD parameters
+    parser.add_argument(
+        '--vad_method',
+        type=str,
+        default='pyannote',
+        choices=['pyannote', 'silero'],
+        help='VAD method to be used'
+    )
+    
+    parser.add_argument(
+        '--vad_onset',
+        type=float,
+        default=0.500,
+        help='Onset threshold for VAD (reduce if speech not being detected)'
+    )
+    
+    parser.add_argument(
+        '--vad_offset',
+        type=float,
+        default=0.363,
+        help='Offset threshold for VAD (reduce if speech not being detected)'
+    )
+    
+    parser.add_argument(
+        '--chunk_size',
+        type=int,
+        default=30,
+        help='Chunk size for merging VAD segments'
+    )
+    
+    # Diarization parameters
     parser.add_argument(
         '--diarize',
         action='store_true',
         default=True,
-        help='Enable speaker diarization (default: True)'
+        help='Apply diarization to assign speaker labels'
     )
     
     parser.add_argument(
         '--min_speakers',
         type=int,
-        default=2,
-        help='Minimum number of speakers (default: 2)'
+        default=None,
+        help='Minimum number of speakers in audio file'
     )
     
     parser.add_argument(
         '--max_speakers',
         type=int,
-        default=5,
-        help='Maximum number of speakers (default: 5)'
+        default=None,
+        help='Maximum number of speakers in audio file'
+    )
+    
+    parser.add_argument(
+        '--diarize_model',
+        default='pyannote/speaker-diarization-3.1',
+        type=str,
+        help='Name of the speaker diarization model to use'
+    )
+    
+    # Alignment parameters
+    parser.add_argument(
+        '--align_model',
+        default=None,
+        help='Name of phoneme-level ASR model to do alignment'
     )
     
     parser.add_argument(
         '--no_align',
         action='store_true',
-        help='Skip wav2vec2 alignment stage'
+        help='Do not perform phoneme alignment'
     )
     
+    parser.add_argument(
+        '--interpolate_method',
+        default='nearest',
+        choices=['nearest', 'linear', 'ignore'],
+        help='Method to assign timestamps to non-aligned words'
+    )
+    
+    parser.add_argument(
+        '--return_char_alignments',
+        action='store_true',
+        help='Return character-level alignments in output'
+    )
+    
+    # HuggingFace token
+    parser.add_argument(
+        '--hf_token',
+        type=str,
+        default=None,
+        help='Hugging Face Access Token for PyAnnote models'
+    )
+    
+    # Our custom parameters
     parser.add_argument(
         '--model_flush',
         action='store_true',
         default=True,
-        help='Flush models between stages to save memory (default: True)'
+        help='Flush models between stages to save memory'
     )
     
     parser.add_argument(
         '--debug_mode',
         action='store_true',
-        help='Enable debug mode with extensive logging and character encoding checks'
+        help='Enable debug mode with extensive logging'
+    )
+    
+    parser.add_argument(
+        '--clean-audio',
+        action='store_true',
+        default=True,
+        help='Clean audio files before transcription'
+    )
+    
+    parser.add_argument(
+        '--no-clean-audio',
+        action='store_true',
+        help='Skip audio cleaning step'
     )
     
     args = parser.parse_args()
@@ -1043,13 +1314,22 @@ def main():
         check_onnxruntime_optimization()
     
     if input_path.is_file():
+        # Clean audio file if requested
+        process_file_path, cleaned_files = clean_audio_if_needed(input_path, args)
+        
+        # Determine which file to process
+        if cleaned_files:
+            file_to_process = cleaned_files[0]  # Use the cleaned file
+        else:
+            file_to_process = input_path  # Use original file
+        
         # For single file, create output directory based on parent folder
         parent_folder = input_path.parent.name
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = Path("data/outputs") / f"{parent_folder}_{timestamp}"
         output_dir.mkdir(parents=True, exist_ok=True)
         console.print(f"\n[green]✓[/green] Created output folder: [cyan]{output_dir}[/cyan]")
-        transcribe_audio(str(input_path), args, output_dir)
+        transcribe_audio(str(file_to_process), args, output_dir)
     elif input_path.is_dir():
         process_folder(str(input_path), args)
     else:

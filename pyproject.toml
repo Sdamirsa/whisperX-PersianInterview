@@ -66,3 +66,8 @@ explicit = true
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
+
+[tool.uv.workspace]
+members = [
+    "my_code/voice_cleaner",
+]
